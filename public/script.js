@@ -1,654 +1,341 @@
 
-// ELEMENTS
-
-const form = document.getElementById("studentForm");
-const table = document.getElementById("studentTable");
-
-const navLinks = document.querySelectorAll(".sidebar .nav");
-
-const pages = {
-    dashboard: document.getElementById("dashboardPage"),
-    students: document.getElementById("studentsPage"),
-    add: document.getElementById("addPage"),
-    details: document.getElementById("detailsPage")
-};
+const STORAGE_KEY = "greenwood_students";
 
 let students = [];
-let editId = null;
+let useBackend = false;
 let selectedStudentId = null;
 
+const $ = (id) => document.getElementById(id);
 
-// =====================================
-// API REQUEST
-// =====================================
+// Load data from Express API or browser storage
+async function loadStudents() {
+    try {
+        const response = await fetch("/api/students");
 
-async function request(url, options = {}) {
-
-    const response = await fetch(url, {
-        ...options,
-        headers: {
-            "Content-Type": "application/json",
-            ...options.headers
+        if (!response.ok) {
+            throw new Error("Backend not available");
         }
-    });
 
-    const data = await response.json();
+        students = await response.json();
+        useBackend = true;
+    } catch (error) {
+        useBackend = false;
 
-    if (!response.ok) {
-        throw new Error(data.message || "Something went wrong");
+        try {
+            students = JSON.parse(localStorage.getItem(STORAGE_KEY)) || [];
+        } catch {
+            students = [];
+        }
     }
 
-    return data;
+    renderAll();
 }
 
+function saveLocal() {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(students));
+}
 
-// =====================================
-// PAGE NAVIGATION
-// =====================================
+async function saveStudentData(student) {
+    if (useBackend) {
+        try {
+            const response = student.id
+                ? await fetch(`/api/students/${student.id}`, {
+                    method: "PUT",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(student)
+                })
+                : await fetch("/api/students", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(student)
+                });
 
-function openPage(page) {
+            if (!response.ok) throw new Error("Save failed");
 
-    Object.values(pages).forEach(item => {
-        item.classList.remove("active");
-    });
-
-    navLinks.forEach(link => {
-        link.classList.remove("active");
-    });
-
-    if (pages[page]) {
-        pages[page].classList.add("active");
+            await loadStudents();
+            return;
+        } catch {
+            useBackend = false;
+        }
     }
 
-    const activeLink = document.querySelector(
-        `.nav[data-page="${page}"]`
-    );
-
-    if (activeLink) {
-        activeLink.classList.add("active");
+    if (student.id) {
+        students = students.map(item =>
+            String(item.id) === String(student.id) ? student : item
+        );
+    } else {
+        student.id = Date.now().toString();
+        students.push(student);
     }
 
-    const names = {
+    saveLocal();
+    renderAll();
+}
+
+async function deleteStudentData(id) {
+    if (!confirm("Are you sure you want to delete this student?")) return;
+
+    if (useBackend) {
+        try {
+            const response = await fetch(`/api/students/${id}`, {
+                method: "DELETE"
+            });
+
+            if (!response.ok) throw new Error("Delete failed");
+
+            await loadStudents();
+            showPage("students");
+            return;
+        } catch {
+            useBackend = false;
+        }
+    }
+
+    students = students.filter(item => String(item.id) !== String(id));
+    saveLocal();
+    renderAll();
+    showPage("students");
+}
+
+function renderAll() {
+    updateDashboard();
+    renderRecentStudents();
+    renderStudents();
+}
+
+function updateDashboard() {
+    $("totalStudents").textContent = students.length;
+
+    // All records are treated as active in this simple project.
+    $("activeStudents").textContent = students.length;
+
+    const classes = new Set(students.map(student => student.studentClass));
+    $("totalClasses").textContent = classes.size;
+}
+
+function studentRow(student, showActions = false) {
+    const name = escapeHTML(student.name);
+    const firstLetter = name.charAt(0).toUpperCase();
+
+    return `
+        <tr>
+            <td>
+                <span class="avatar">${firstLetter}</span>
+                <span class="student-name" data-view="${student.id}">${name}</span>
+            </td>
+            <td>${escapeHTML(student.rollNo)}</td>
+            <td>${escapeHTML(student.studentClass)}</td>
+            ${showActions ? `
+                <td>${escapeHTML(student.phone)}</td>
+                <td>${escapeHTML(student.email)}</td>
+                <td>
+                    <button class="action-btn edit-btn" data-edit="${student.id}" title="Edit">
+                        <i class="fa-solid fa-pen"></i>
+                    </button>
+                    <button class="action-btn delete-btn" data-delete="${student.id}" title="Delete">
+                        <i class="fa-solid fa-trash"></i>
+                    </button>
+                </td>
+            ` : `
+                <td>${escapeHTML(student.email)}</td>
+                <td><span class="badge text-bg-success">Active</span></td>
+            `}
+        </tr>
+    `;
+}
+
+function renderRecentStudents() {
+    const recent = [...students].slice(-5).reverse();
+
+    $("recentTable").innerHTML = recent.length
+        ? recent.map(student => studentRow(student)).join("")
+        : `<tr><td colspan="5" class="text-center text-muted py-4">No student records yet. Add your first student.</td></tr>`;
+}
+
+function renderStudents() {
+    const search = $("searchInput").value.toLowerCase().trim();
+    const selectedClass = $("classFilter").value;
+
+    const filtered = students.filter(student => {
+        const matchesSearch =
+            String(student.name || "").toLowerCase().includes(search) ||
+            String(student.rollNo || "").toLowerCase().includes(search) ||
+            String(student.email || "").toLowerCase().includes(search);
+
+        const matchesClass =
+            !selectedClass || student.studentClass === selectedClass;
+
+        return matchesSearch && matchesClass;
+    });
+
+    $("studentsTable").innerHTML = filtered
+        .map(student => studentRow(student, true))
+        .join("");
+
+    $("emptyMessage").classList.toggle("hidden", filtered.length > 0);
+}
+
+function showPage(page) {
+    document.querySelectorAll(".page").forEach(section => {
+        section.classList.add("hidden");
+    });
+
+    const pageElement = $(page + "Page");
+    if (pageElement) pageElement.classList.remove("hidden");
+
+    document.querySelectorAll(".nav-link").forEach(button => {
+        button.classList.toggle("active", button.dataset.page === page);
+    });
+
+    const titles = {
         dashboard: "Dashboard",
         students: "Students",
         add: "Add Student",
         details: "Student Details"
     };
 
-    document.getElementById("breadcrumb").innerText =
-        names[page] || "Dashboard";
+    $("pageTitle").textContent = titles[page] || "Dashboard";
 
-    window.scrollTo(0, 0);
+    if (page === "students") renderStudents();
+    if (page === "dashboard") renderAll();
 }
 
-
-// SIDEBAR CLICK
-
-navLinks.forEach(link => {
-
-    link.addEventListener("click", function(e) {
-
-        e.preventDefault();
-
-        const page = this.dataset.page;
-
-        if (page === "add") {
-            resetForm();
-        }
-
-        if (page !== "add") {
-            resetForm();
-        }
-
-        openPage(page);
-
-        if (page === "students" || page === "dashboard") {
-            loadStudents();
-        }
-
-        history.replaceState(null, "", "#" + page);
-
-    });
-
-});
-
-
-// QUICK ACTIONS
-
-document.querySelectorAll("[data-go]").forEach(button => {
-
-    button.addEventListener("click", function() {
-
-        const page = this.dataset.go;
-
-        resetForm();
-        openPage(page);
-
-        if (page === "students" || page === "dashboard") {
-            loadStudents();
-        }
-
-        history.replaceState(null, "", "#" + page);
-
-    });
-
-});
-
-
-// =====================================
-// LOAD STUDENTS
-// =====================================
-
-async function loadStudents() {
-
-    try {
-
-        students = await request("/api/students");
-
-        displayStudents();
-
-        updateDashboard();
-
-    }
-
-    catch (error) {
-
-        console.error(error);
-
-        table.innerHTML = `
-            <tr>
-                <td colspan="5">Unable to load students.</td>
-            </tr>
-        `;
-
-    }
-
+function openAddForm() {
+    $("studentForm").reset();
+    $("studentId").value = "";
+    $("formTitle").textContent = "Add New Student";
+    showPage("add");
 }
 
+function editStudent(id) {
+    const student = students.find(item => String(item.id) === String(id));
+    if (!student) return;
 
-// =====================================
-// DASHBOARD STATISTICS
-// =====================================
+    $("studentId").value = student.id;
+    $("studentName").value = student.name || "";
+    $("rollNo").value = student.rollNo || "";
+    $("studentClass").value = student.studentClass || "";
+    $("studentPhone").value = student.phone || "";
+    $("studentEmail").value = student.email || "";
+    $("studentGender").value = student.gender || "";
+    $("studentAddress").value = student.address || "";
 
-function updateDashboard() {
-
-    document.getElementById("totalStudents").innerText =
-        students.length;
-
-    document.getElementById("totalRecords").innerText =
-        students.length;
-
-    const classes = new Set(
-        students.map(s => s.className)
-    );
-
-    document.getElementById("totalClasses").innerText =
-        classes.size;
-
+    $("formTitle").textContent = "Edit Student";
+    showPage("add");
 }
 
+function viewStudent(id) {
+    const student = students.find(item => String(item.id) === String(id));
+    if (!student) return;
 
-// =====================================
-// SAFE TEXT
-// =====================================
+    selectedStudentId = student.id;
 
-function safe(value) {
+    $("detailAvatar").textContent = (student.name || "S").charAt(0).toUpperCase();
+    $("detailName").textContent = student.name;
+    $("detailRoll").textContent = "Roll Number: " + student.rollNo;
 
-    return String(value ?? "-").replace(/[&<>"']/g, char => ({
+    const details = [
+        ["Full Name", student.name],
+        ["Roll Number", student.rollNo],
+        ["Class", student.studentClass],
+        ["Phone Number", student.phone],
+        ["Email Address", student.email],
+        ["Gender", student.gender || "Not provided"],
+        ["Address", student.address || "Not provided"]
+    ];
+
+    $("studentDetails").innerHTML = details.map(([label, value]) => `
+        <div class="detail-item">
+            <small>${label}</small>
+            <strong>${escapeHTML(value)}</strong>
+        </div>
+    `).join("");
+
+    showPage("details");
+}
+
+function escapeHTML(value) {
+    return String(value ?? "").replace(/[&<>"']/g, character => ({
         "&": "&amp;",
         "<": "&lt;",
         ">": "&gt;",
         '"': "&quot;",
         "'": "&#39;"
-    })[char]);
-
+    })[character]);
 }
 
-
-// =====================================
-// DISPLAY STUDENTS
-// =====================================
-
-function displayStudents() {
-
-    const search = document.getElementById("searchInput")
-        .value.toLowerCase();
-
-    const selectedClass = document.getElementById("classFilter")
-        .value;
-
-    const filtered = students.filter(s => {
-
-        const matchSearch = [
-            s.name,
-            s.rollNo,
-            s.className,
-            s.email,
-            s.phone
-        ].some(value =>
-            String(value).toLowerCase().includes(search)
-        );
-
-        const matchClass =
-            !selectedClass || s.className === selectedClass;
-
-        return matchSearch && matchClass;
-
+// Navigation
+document.querySelectorAll(".nav-link").forEach(button => {
+    button.addEventListener("click", () => {
+        if (button.dataset.page === "add") {
+            openAddForm();
+        } else {
+            showPage(button.dataset.page);
+        }
     });
+});
 
+$("topAddBtn").addEventListener("click", openAddForm);
+$("addStudentBtn").addEventListener("click", openAddForm);
+$("viewAllBtn").addEventListener("click", () => showPage("students"));
+$("cancelBtn").addEventListener("click", () => showPage("students"));
+$("backBtn").addEventListener("click", () => showPage("students"));
 
-    document.getElementById("recordCount").innerText =
-        filtered.length + " Records";
+$("searchInput").addEventListener("input", renderStudents);
+$("classFilter").addEventListener("change", renderStudents);
 
-    document.getElementById("showingText").innerText =
-        `Showing ${filtered.length} of ${students.length} students`;
+// Add and update student
+$("studentForm").addEventListener("submit", async event => {
+    event.preventDefault();
 
-
-    if (filtered.length === 0) {
-
-        table.innerHTML = `
-            <tr>
-                <td colspan="5" style="text-align:center;padding:30px">
-                    <i class="bi bi-people" style="font-size:25px"></i>
-                    <p style="margin-top:8px">No Students Found</p>
-                </td>
-            </tr>
-        `;
-
-        return;
-
-    }
-
-
-    table.innerHTML = filtered.map(s => `
-
-        <tr>
-
-            <td>
-                <div class="student-name">
-
-                    <a href="#details"
-                       class="student-detail"
-                       data-id="${safe(s.id)}">
-
-                       ${safe(s.name)}
-
-                    </a>
-
-                </div>
-
-                <div class="student-email">
-                    ${safe(s.email)}
-                </div>
-            </td>
-
-            <td>${safe(s.rollNo)}</td>
-
-            <td>
-                <span class="class-badge">
-                    ${safe(s.className)}
-                </span>
-            </td>
-
-            <td>${safe(s.phone)}</td>
-
-            <td>
-
-                <button class="action-btn edit-btn"
-                    data-action="edit"
-                    data-id="${safe(s.id)}">
-
-                    <i class="bi bi-pencil"></i> Edit
-
-                </button>
-
-                <button class="action-btn delete-btn"
-                    data-action="delete"
-                    data-id="${safe(s.id)}">
-
-                    <i class="bi bi-trash"></i> Delete
-
-                </button>
-
-            </td>
-
-        </tr>
-
-    `).join("");
-
-}
-
-
-// =====================================
-// ADD / UPDATE STUDENT
-// =====================================
-
-form.addEventListener("submit", async function(e) {
-
-    e.preventDefault();
+    const id = $("studentId").value;
 
     const student = {
-
-        name: document.getElementById("name").value.trim(),
-
-        rollNo: document.getElementById("rollNo").value.trim(),
-
-        className: document.getElementById("className").value,
-
-        email: document.getElementById("email").value.trim(),
-
-        phone: document.getElementById("phone").value.trim()
-
+        id: id || undefined,
+        name: $("studentName").value.trim(),
+        rollNo: $("rollNo").value.trim(),
+        studentClass: $("studentClass").value,
+        phone: $("studentPhone").value.trim(),
+        email: $("studentEmail").value.trim(),
+        gender: $("studentGender").value,
+        address: $("studentAddress").value.trim()
     };
 
+    const duplicateRoll = students.some(item =>
+        item.rollNo.toLowerCase() === student.rollNo.toLowerCase() &&
+        String(item.id) !== String(id)
+    );
 
-    const submitBtn = document.getElementById("submitBtn");
-
-    submitBtn.disabled = true;
-
-    try {
-
-        if (editId) {
-
-            await request(`/api/students/${editId}`, {
-                method: "PUT",
-                body: JSON.stringify(student)
-            });
-
-            alert("Student Updated Successfully!");
-
-        }
-
-        else {
-
-            await request("/api/students", {
-                method: "POST",
-                body: JSON.stringify(student)
-            });
-
-            alert("Student Added Successfully!");
-
-        }
-
-
-        resetForm();
-
-        await loadStudents();
-
-        openPage("students");
-
-        history.replaceState(null, "", "#students");
-
-    }
-
-    catch (error) {
-
-        alert(error.message);
-
-    }
-
-    finally {
-
-        submitBtn.disabled = false;
-
-    }
-
-});
-
-
-// =====================================
-// STUDENT TABLE CLICK
-// =====================================
-
-table.addEventListener("click", async function(e) {
-
-    // Student Name Click
-
-    const detailLink = e.target.closest(".student-detail");
-
-    if (detailLink) {
-
-        e.preventDefault();
-
-        const id = detailLink.dataset.id;
-
-        showStudentDetails(id);
-
+    if (duplicateRoll) {
+        alert("This roll number already exists!");
         return;
-
     }
 
+    await saveStudentData(student);
+    alert(id ? "Student updated successfully!" : "Student added successfully!");
 
-    const button = e.target.closest("button[data-action]");
-
-    if (!button) return;
-
-    const id = button.dataset.id;
-
-    const student = students.find(s => s.id === id);
-
-    if (!student) return;
-
-
-    // EDIT STUDENT
-
-    if (button.dataset.action === "edit") {
-
-        editId = id;
-
-        document.getElementById("name").value = student.name;
-        document.getElementById("rollNo").value = student.rollNo;
-        document.getElementById("className").value = student.className;
-        document.getElementById("email").value = student.email;
-        document.getElementById("phone").value = student.phone;
-
-        document.getElementById("formPageTitle").innerText =
-            "Update Student";
-
-        document.getElementById("submitBtn").innerHTML =
-            '<i class="bi bi-check-circle"></i> Save Changes';
-
-        document.getElementById("cancelBtn")
-            .classList.remove("hidden");
-
-        openPage("add");
-
-        history.replaceState(null, "", "#add");
-
-    }
-
-
-    // DELETE STUDENT
-
-    if (button.dataset.action === "delete") {
-
-        const confirmDelete = confirm(
-            `Are you sure you want to delete ${student.name}?`
-        );
-
-        if (!confirmDelete) return;
-
-        try {
-
-            await request(`/api/students/${id}`, {
-                method: "DELETE"
-            });
-
-            alert("Student Deleted Successfully!");
-
-            await loadStudents();
-
-        }
-
-        catch (error) {
-
-            alert(error.message);
-
-        }
-
-    }
-
+    $("studentForm").reset();
+    showPage("students");
 });
 
-
-// =====================================
-// STUDENT DETAILS PAGE
-// =====================================
-
-function showStudentDetails(id) {
-
-    const student = students.find(s => s.id === id);
-
-    if (!student) return;
-
-    selectedStudentId = id;
-
-    document.getElementById("profileAvatar").innerText =
-        student.name.charAt(0).toUpperCase();
-
-    document.getElementById("detailName").innerText =
-        student.name;
-
-    document.getElementById("detailClass").innerText =
-        student.className;
-
-    document.getElementById("detailRoll").innerText =
-        student.rollNo;
-
-    document.getElementById("detailClassFull").innerText =
-        student.className;
-
-    document.getElementById("detailEmail").innerText =
-        student.email;
-
-    document.getElementById("detailPhone").innerText =
-        student.phone;
-
-    openPage("details");
-
-    history.replaceState(null, "", "#details");
-
-}
-
-
-// BACK TO STUDENTS
-
-document.getElementById("backStudents")
-    .addEventListener("click", function() {
-
-        openPage("students");
-
-        loadStudents();
-
-        history.replaceState(null, "", "#students");
-
-    });
-
-
-// EDIT FROM DETAILS PAGE
-
-document.getElementById("detailEdit")
-    .addEventListener("click", function() {
-
-        const student = students.find(
-            s => s.id === selectedStudentId
-        );
-
-        if (!student) return;
-
-        editId = student.id;
-
-        document.getElementById("name").value = student.name;
-        document.getElementById("rollNo").value = student.rollNo;
-        document.getElementById("className").value = student.className;
-        document.getElementById("email").value = student.email;
-        document.getElementById("phone").value = student.phone;
-
-        document.getElementById("formPageTitle").innerText =
-            "Update Student";
-
-        document.getElementById("submitBtn").innerHTML =
-            '<i class="bi bi-check-circle"></i> Save Changes';
-
-        document.getElementById("cancelBtn")
-            .classList.remove("hidden");
-
-        openPage("add");
-
-        history.replaceState(null, "", "#add");
-
-    });
-
-
-// =====================================
-// RESET FORM
-// =====================================
-
-function resetForm() {
-
-    form.reset();
-
-    editId = null;
-
-    document.getElementById("formPageTitle").innerText =
-        "Add New Student";
-
-    document.getElementById("submitBtn").innerHTML =
-        '<i class="bi bi-plus-circle"></i> Add Student';
-
-    document.getElementById("cancelBtn")
-        .classList.add("hidden");
-
-}
-
-
-// CANCEL BUTTON
-
-document.getElementById("cancelBtn")
-    .addEventListener("click", function() {
-
-        resetForm();
-
-        openPage("students");
-
-        loadStudents();
-
-        history.replaceState(null, "", "#students");
-
-    });
-
-
-// =====================================
-// SEARCH
-// =====================================
-
-document.getElementById("searchInput")
-    .addEventListener("input", displayStudents);
-
-
-// CLASS FILTER
-
-document.getElementById("classFilter")
-    .addEventListener("change", displayStudents);
-
-
-// =====================================
-// INITIALIZE WEBSITE
-// =====================================
-
-const initialPage = location.hash.replace("#", "");
-
-const validPages = [
-    "dashboard",
-    "students",
-    "add",
-    "details"
-];
-
-openPage(
-    validPages.includes(initialPage)
-        ? initialPage
-        : "dashboard"
-);
-
+// Table buttons and student name clicks
+document.addEventListener("click", event => {
+    const viewButton = event.target.closest("[data-view]");
+    const editButton = event.target.closest("[data-edit]");
+    const deleteButton = event.target.closest("[data-delete]");
+
+    if (viewButton) viewStudent(viewButton.dataset.view);
+    if (editButton) editStudent(editButton.dataset.edit);
+    if (deleteButton) deleteStudentData(deleteButton.dataset.delete);
+});
+
+$("detailEditBtn").addEventListener("click", () => {
+    editStudent(selectedStudentId);
+});
+
+$("detailDeleteBtn").addEventListener("click", () => {
+    deleteStudentData(selectedStudentId);
+});
+
+// Start application
 loadStudents();
